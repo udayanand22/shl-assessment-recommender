@@ -1,71 +1,114 @@
-import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-import re
+import json
+import cohere
+import os
 from scraper import SHLScraper
+from dotenv import load_dotenv
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+
+# Load API key
+load_dotenv()
+COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 
 class SHLRecommender:
     def __init__(self):
         self.scraper = SHLScraper()
-        self.df = self.scraper.get_assessments()
-        
-        # Convert duration to minutes
-        self.df['duration_mins'] = self.df['duration'].apply(
-            lambda x: int(re.search(r'\d+', str(x)).group()) if pd.notnull(x) else 0
-        )
-        
-        # Configure vectorizer
-        self.vectorizer = TfidfVectorizer(
-            stop_words='english',
-            ngram_range=(1, 2)
-        )
-        
-        # Prepare search text
-        self.texts = self.df['name'] + ' ' + self.df['test_type']
-        self.vectors = self.vectorizer.fit_transform(self.texts)
+        self.assessments = []
+        self.embeddings = None
+        self.cohere = cohere.Client(COHERE_API_KEY)
 
-    def recommend(self, query, top_k=3):
+    def load_or_scrape(self, filename='shl_assessments.json'):
         try:
-            query = query.lower()
-            
-            # 1. Handle special cases first
-            if 'javascript' in query:
-                filtered = self.df[self.df['name'].str.contains('JavaScript', case=False)]
-            elif 'java' in query and 'script' not in query:
-                filtered = self.df[self.df['name'].str.contains('Java', case=False) & 
-                          ~self.df['name'].str.contains('JavaScript', case=False)]
-            elif 'cognitive' in query or 'personality' in query:
-                filtered = self.df[self.df['test_type'] == 'Psychometric']
-            elif 'python' in query or 'sql' in query:
-                filtered = self.df[self.df['test_type'] == 'Technical']
-            elif 'screen' in query or 'jd' in query:
-                filtered = self.df[self.df['name'].str.contains('Quick|Screen', case=False)]
-            else:
-                filtered = self.df.copy()
-            
-            # 2. Filter by duration
-            duration_match = re.search(r'(\d+)\s*min', query)
-            if duration_match:
-                max_duration = int(duration_match.group(1))
-                filtered = filtered[filtered['duration_mins'] <= max_duration]
-            
-            # 3. If no special case matched, use similarity
-            if len(filtered) == len(self.df):
-                query_vec = self.vectorizer.transform([query])
-                vectors = self.vectorizer.transform(filtered['name'] + ' ' + filtered['test_type'])
-                similarities = cosine_similarity(query_vec, vectors).flatten()
-                filtered['similarity'] = similarities
-                filtered = filtered[filtered['similarity'] > 0.2]
-                filtered = filtered.sort_values('similarity', ascending=False)
-            
-            # 4. Fallback to fastest tests if empty
-            if len(filtered) == 0:
-                if duration_match:
-                    return self.df[self.df['duration_mins'] <= max_duration].sort_values('duration_mins').head(top_k).to_dict('records')
-                return self.df.sort_values('duration_mins').head(top_k).to_dict('records')
-            
-            return filtered.head(top_k).to_dict('records')
-            
-        except Exception as e:
-            print(f"Error: {str(e)}")
-            return self.df.sort_values('duration_mins').head(top_k).to_dict('records')
+            with open(filename, 'r', encoding='utf-8') as f:
+                self.assessments = json.load(f)
+            print(f"✅ Loaded {len(self.assessments)} assessments from file.")
+        except FileNotFoundError:
+            print("🔄 File not found. Scraping data...")
+            self.assessments = self.scraper.scrape_all()
+            self.scraper.save_to_json(self.assessments, filename)
+
+        if len(self.assessments) == 0:
+            print("⚠️ No assessments were loaded or scraped.")
+            return
+        
+        print(f"Loaded assessments (first 3): {self.assessments[:3]}")  # Show first 3 for debugging
+
+    def embed_assessments(self):
+        if not self.assessments:
+            print("⚠️ No assessments available to embed.")
+            return
+
+        texts = [a['name'] + " " + a.get('description', '') for a in self.assessments]
+        print("🔢 Generating embeddings for assessments...")
+        response = self.cohere.embed(
+            texts=texts,
+            model="embed-english-v3.0",
+            input_type="search_document"
+        )
+        self.embeddings = np.array(response.embeddings)
+        print(f"✅ Embeddings generated. Number of embeddings: {len(self.embeddings)}")
+
+    def recommend(self, user_query, top_k=5):
+        print(f"\n🔍 Searching for assessments similar to: {user_query}")
+
+        if not self.assessments:
+            print("⚠️ No assessments loaded.")
+            return []
+
+        query_embedding = self.cohere.embed(
+            texts=[user_query],
+            model="embed-english-v3.0",
+            input_type="search_query"
+        ).embeddings[0]
+        query_embedding = np.array(query_embedding).reshape(1, -1)
+
+        similarities = cosine_similarity(query_embedding, self.embeddings)[0]
+
+        # Debug: Print all similarity scores
+        print("\n📊 Similarity Scores:")
+        for i, score in enumerate(similarities):
+            if i < len(self.assessments):  # Ensure index is within bounds
+                print(f"{self.assessments[i]['name'][:40]:40} → Score: {round(score, 4)}")
+
+        top_indices = similarities.argsort()[-top_k:][::-1]
+
+        recommendations = []
+        for idx in top_indices:
+            score = similarities[idx]
+            if score < 0.2:  # Optional threshold filter
+                continue
+            item = self.assessments[idx]
+            recommendations.append({
+                "name": item['name'],
+                "description": item.get('description', 'N/A'),
+                "url": item['url'],
+                "score": round(score, 3)
+            })
+
+        if not recommendations:
+            print("⚠️ No strong matches found for the query.")
+
+        return recommendations
+
+
+# Singleton instance (for API reuse)
+_recommender_instance = SHLRecommender()
+_recommender_instance.load_or_scrape()
+_recommender_instance.embed_assessments()
+
+def recommend_assessments(query: str, top_k: int = 5):
+    return _recommender_instance.recommend(query, top_k=top_k)
+
+# Optional: interactive CLI
+if __name__ == '__main__':
+    while True:
+        query = input("\n🧠 Enter a job role or skill you're hiring for (or 'exit'): ").strip()
+        if query.lower() == 'exit':
+            break
+        results = recommend_assessments(query)
+        for i, r in enumerate(results, 1):
+            print(f"\n🔹 Recommendation #{i}")
+            print(f"Name       : {r['name']}")
+            print(f"Score      : {r['score']}")
+            print(f"Description: {r['description']}")
+            print(f"Link       : {r['url']}")

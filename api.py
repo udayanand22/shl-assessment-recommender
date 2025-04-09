@@ -1,16 +1,14 @@
 from fastapi import FastAPI
-from recommender import SHLRecommender
 from pydantic import BaseModel
+from recommender import recommend_assessments
 
 app = FastAPI()
-recommender = SHLRecommender()
 
-class Query(BaseModel):
-    text: str
+class RecommendationRequest(BaseModel):
+    query: str
     top_k: int = 5
 
-@app.post("/recommend")
-async def recommend(query: Query):
-    return {"recommendations": recommender.recommend(query.text, query.top_k)}
-
-# Run with: uvicorn api:app --reload
+@app.post("/recommendations")
+async def recommend_endpoint(req: RecommendationRequest):
+    recommendations = recommend_assessments(req.query, req.top_k)
+    return {"recommendations": recommendations}
