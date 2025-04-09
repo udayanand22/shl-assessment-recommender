@@ -10,4 +10,4 @@ numpy
 scikit-learn
 pydantic
 python-dotenv
-beautifulsoup
+beautifulsoup4
