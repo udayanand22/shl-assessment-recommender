@@ -1,0 +1,7 @@
+streamlit
+fastapi
+requests
+beautifulsoup4
+sentence-transformers
+pandas
+uvicorn

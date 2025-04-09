@@ -1,0 +1,4 @@
+name,url,remote_testing,adaptive_irt,duration,test_type
+Java Developer Test,https://www.shl.com/assessments/java,Yes,No,40 mins,Coding
+Cognitive Ability Test,https://www.shl.com/assessments/cognitive,Yes,Yes,30 mins,Psychometric
+Python & SQL Assessment,https://www.shl.com/assessments/python-sql,Yes,No,60 mins,Technical
