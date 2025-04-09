@@ -5,3 +5,9 @@ beautifulsoup4
 sentence-transformers
 pandas
 uvicorn
+cohere
+numpy
+scikit-learn
+pydantic
+python-dotenv
+beautifulsoup
